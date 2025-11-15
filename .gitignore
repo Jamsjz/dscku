@@ -2,6 +2,7 @@ kuclasses.json
 *.json
 credentials/
 Data_Science/
+.env
 temp_uploads/
 __pycache__/
 .env

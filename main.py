@@ -387,46 +387,12 @@ def delete_file_in_drive(file_id):
 # === FASTHTML SETUP ===
 
 
-def admin_auth_before(req, sess):
-    if (
-        req.url.path.startswith("/admin")
-        and not req.url.path.startswith("/admin/login")
-        and sess.get("admin") != True
-    ):
-        return RedirectResponse("/admin/login", status_code=303)
+app, rt = fast_app(pico=True, live=False, debug=False)
 
 
-beforeware = Beforeware(admin_auth_before, skip=[r"/admin/login", r"/static/.*"])
-app, rt = fast_app(before=beforeware, pico=True, live=False, debug=False)
-
-# === ADMIN LOGIN ===
-
-
-@rt("/admin/login", methods=["GET", "POST"])
-async def admin_login(req, session):
-    if req.method == "GET":
-        return Titled(
-            "Admin Login",
-            Form(method="post")(
-                Label("Password", Input(name="password", type="password")),
-                Button("Login", type="submit"),
-            ),
-        )
-    form = await req.form()
-    if form.get("password") == ADMIN_PASSWD:
-        session["admin"] = True
-        return RedirectResponse("/admin")
-    return Titled(
-        "Admin Login", P("Incorrect password."), A("Back", href="/admin/login")
-    )
-
-
-# === ADMIN DASHBOARD ===
-
-
-@rt("/admin")
-def admin_dashboard(req, session):
-    """Admin dashboard with timezone-aware datetime display"""
+@rt("/admin", methods=["GET"])
+async def admin_page(req):
+    """Admin page with upload form and recent files"""
     try:
         # Get the user's timezone from cookies or default to UTC
         user_timezone = req.cookies.get("timezone", "UTC")
@@ -484,8 +450,63 @@ def admin_dashboard(req, session):
                 print(f"Error listing files for {semester}: {str(e)}")
                 continue
 
+        years = [str(datetime.datetime.utcnow().year - i) for i in range(6)]
+        upload_form = Form(
+            id="uploadForm",
+            action="/admin/upload",
+            enctype="multipart/form-data",
+            method="post",
+            onsubmit="return validateFile()",
+        )(
+            Label(
+                "Semester",
+                Select(
+                    *[
+                        Option(f"Semester {i}", value=f"Semester_{i}")
+                        for i in range(1, 9)
+                    ],
+                    name="semester",
+                    required=True,
+                ),
+            ),
+            Label(
+                "Batch Year",
+                Select(
+                    *[Option(y, value=y) for y in years],
+                    name="batch_year",
+                    required=True,
+                ),
+            ),
+            Label(
+                "File (zip only, max 50MB)",
+                Input(
+                    id="fileInput",
+                    name="file",
+                    type="file",
+                    accept=".zip",
+                    required=True,
+                ),
+            ),
+            Label("Admin Password:", Input(type="password", name="password")),
+            Div(id="errorMsg", style="color: red; margin: 10px 0;"),
+            Button("Upload", type="submit"),
+        )
+
         return Titled(
             "Admin Dashboard",
+            Div(
+                H3("Upload Rules:"),
+                Ul(
+                    Li("Only .zip files are allowed"),
+                    Li("Maximum file size: 50MB"),
+                    Li("Files can be deleted within 24 hours of upload"),
+                    Li(
+                        "Old files (up to 5 years) can be replaced by uploading new versions"
+                    ),
+                ),
+                style="margin-bottom: 20px;",
+            ),
+            upload_form,
             Div(
                 P(
                     f"Note: Files can only be deleted within 24 hours of upload (Displaying times in {tz.zone})",
@@ -534,10 +555,7 @@ def admin_dashboard(req, session):
                 if all_files
                 else P("No recent uploads found in the last 24 hours")
             ),
-            Div(
-                A("Upload New File", href="/admin/upload", class_="btn btn-primary"),
-                style="margin-top: 30px;",
-            ),
+            A("Back to Home", href="/"),
             Script(
                 """
                 // Try to detect user's timezone
@@ -546,6 +564,34 @@ def admin_dashboard(req, session):
                     document.cookie = `timezone=${userTimezone}; path=/; max-age=${60*60*24*365}`;
                 } catch (e) {
                     console.log("Could not detect timezone", e);
+                }
+
+                function validateFile() {
+                    const fileInput = document.getElementById('fileInput');
+                    const errorDiv = document.getElementById('errorMsg');
+                    errorDiv.textContent = '';
+                    
+                    if (fileInput.files.length === 0) {
+                        errorDiv.textContent = 'Please select a file';
+                        return false;
+                    }
+                    
+                    const file = fileInput.files[0];
+                    const maxSize = 50 * 1024 * 1024; // 50MB
+                    
+                    // Check file extension
+                    if (!file.name.toLowerCase().endsWith('.zip')) {
+                        errorDiv.textContent = 'Only .zip files are allowed';
+                        return false;
+                    }
+                    
+                    // Check file size
+                    if (file.size > maxSize) {
+                        errorDiv.textContent = 'File exceeds maximum size of 50MB';
+                        return false;
+                    }
+                    
+                    return true;
                 }
             """
             ),
@@ -558,33 +604,48 @@ def admin_dashboard(req, session):
                 "Error loading recent uploads. Please try again later.",
                 style="color: red;",
             ),
-            A("Back to Upload", href="/admin/upload"),
+            A("Back to Home", href="/"),
         )
 
 
 @rt("/admin/upload", methods=["POST"])
-async def admin_upload_process(req, session):
+async def admin_upload_process(req):
     """Handle file uploads with validation and conflict resolution"""
     form = await req.form()
     file = form.get("file")
     semester = form.get("semester")
     batch_year = form.get("batch_year")
+    password = form.get("password")
+
+    if password != ADMIN_PASSWD:
+        return Titled(
+            "Error", P("Invalid password."), A("Back", href="javascript:history.back()")
+        )
 
     # Validate required fields
     if not all([file, semester, batch_year]):
-        add_toast(session, "Missing required fields", "error")
-        return RedirectResponse("/admin/upload", status_code=303)
+        return Titled(
+            "Error",
+            P("Missing required fields."),
+            A("Back", href="javascript:history.back()"),
+        )
 
     filename = f"{batch_year}.zip"  # Enforce naming convention
 
     # Client-side validation (should match server-side)
     if not file.filename.lower().endswith(".zip"):
-        add_toast(session, "Only .zip files are allowed", "error")
-        return RedirectResponse("/admin/upload", status_code=303)
+        return Titled(
+            "Error",
+            P("Only .zip files are allowed."),
+            A("Back", href="javascript:history.back()"),
+        )
 
     if file.size > 50 * 1024 * 1024:  # 50MB
-        add_toast(session, "File exceeds maximum size of 50MB", "error")
-        return RedirectResponse("/admin/upload", status_code=303)
+        return Titled(
+            "Error",
+            P("File exceeds maximum size of 50MB."),
+            A("Back", href="javascript:history.back()"),
+        )
 
     try:
         file_bytes = await file.read()
@@ -595,8 +656,11 @@ async def admin_upload_process(req, session):
                 if zip_ref.testzip() is not None:
                     raise ValueError("ZIP file contains corrupt files")
         except zipfile.BadZipfile:
-            add_toast(session, "Invalid ZIP file format", "error")
-            return RedirectResponse("/admin/upload", status_code=303)
+            return Titled(
+                "Error",
+                P("Invalid ZIP file format."),
+                A("Back", href="javascript:history.back()"),
+            )
 
         # Check for existing file
         existing_files = list_files_in_semester(semester)
@@ -608,15 +672,13 @@ async def admin_upload_process(req, session):
             # New upload
             try:
                 file_id = upload_file_to_drive(file_bytes, filename, semester)
-                add_toast(
-                    session,
-                    f"Successfully uploaded {filename} to {semester}",
-                    "success",
-                )
-                return RedirectResponse("/admin")
+                return RedirectResponse("/admin", status_code=303)
             except Exception as e:
-                add_toast(session, f"Upload failed: {str(e)}", "error")
-                return RedirectResponse("/admin/upload", status_code=303)
+                return Titled(
+                    "Error",
+                    P(f"Upload failed: {str(e)}"),
+                    A("Back", href="javascript:history.back()"),
+                )
         else:
             # Conflict resolution needed
             temp_path = TEMP_UPLOADS / f"temp_{uuid.uuid4().hex}.zip"
@@ -631,123 +693,44 @@ async def admin_upload_process(req, session):
             except Exception as e:
                 if temp_path.exists():
                     temp_path.unlink()
-                add_toast(
-                    session,
-                    f"Error preparing for conflict resolution: {str(e)}",
-                    "error",
+                return Titled(
+                    "Error",
+                    P(f"Error preparing for conflict resolution: {str(e)}"),
+                    A("Back", href="javascript:history.back()"),
                 )
-                return RedirectResponse("/admin/upload", status_code=303)
 
     except Exception as e:
-        add_toast(session, f"Upload processing failed: {str(e)}", "error")
-        return RedirectResponse("/admin/upload", status_code=303)
-
-
-@rt("/admin/upload", methods=["GET"])
-async def admin_upload_form(req, session):
-    """Handle GET requests for the upload form"""
-    years = [str(datetime.datetime.utcnow().year - i) for i in range(6)]
-    return Titled(
-        "Upload File",
-        Div(
-            H3("Upload Rules:"),
-            Ul(
-                Li("Only .zip files are allowed"),
-                Li("Maximum file size: 50MB"),
-                Li("Files can be deleted within 24 hours of upload"),
-                Li(
-                    "Old files (up to 5 years) can be replaced by uploading new versions"
-                ),
-            ),
-            style="margin-bottom: 20px;",
-        ),
-        Form(
-            id="uploadForm",
-            enctype="multipart/form-data",
-            method="post",
-            onsubmit="return validateFile()",
-        )(
-            Label(
-                "Semester",
-                Select(
-                    *[
-                        Option(f"Semester {i}", value=f"Semester_{i}")
-                        for i in range(1, 9)
-                    ],
-                    name="semester",
-                    required=True,
-                ),
-            ),
-            Label(
-                "Batch Year",
-                Select(
-                    *[Option(y, value=y) for y in years],
-                    name="batch_year",
-                    required=True,
-                ),
-            ),
-            Label(
-                "File (zip only, max 50MB)",
-                Input(
-                    id="fileInput",
-                    name="file",
-                    type="file",
-                    accept=".zip",
-                    required=True,
-                ),
-            ),
-            Div(id="errorMsg", style="color: red; margin: 10px 0;"),
-            Button("Upload", type="submit"),
-        ),
-        Script(
-            """
-            function validateFile() {
-                const fileInput = document.getElementById('fileInput');
-                const errorDiv = document.getElementById('errorMsg');
-                errorDiv.textContent = '';
-                
-                if (fileInput.files.length === 0) {
-                    errorDiv.textContent = 'Please select a file';
-                    return false;
-                }
-                
-                const file = fileInput.files[0];
-                const maxSize = 50 * 1024 * 1024; // 50MB
-                
-                // Check file extension
-                if (!file.name.toLowerCase().endsWith('.zip')) {
-                    errorDiv.textContent = 'Only .zip files are allowed';
-                    return false;
-                }
-                
-                // Check file size
-                if (file.size > maxSize) {
-                    errorDiv.textContent = 'File exceeds maximum size of 50MB';
-                    return false;
-                }
-                
-                return true;
-            }
-        """
-        ),
-    )
+        return Titled(
+            "Error",
+            P(f"Upload processing failed: {str(e)}"),
+            A("Back", href="javascript:history.back()"),
+        )
 
 
 @rt("/admin/upload/resolve", methods=["POST"])
-async def admin_upload_resolve(req, session):
+async def admin_upload_resolve(req):
     form = await req.form()
     temp_file, existing_file_id = Path(form["temp"]), form["existing"]
-    action, confirm1, confirm2 = (
+    action, confirm1, confirm2, password = (
         form["action"],
         form.get("confirm1", ""),
         form.get("confirm2", ""),
+        form.get("password"),
     )
     semester = form.get("semester")
     batch_year = form.get("batch_year")  # Get batch_year from form
 
+    if password != ADMIN_PASSWD:
+        return Titled(
+            "Error", P("Invalid password."), A("Back", href="javascript:history.back()")
+        )
+
     if not semester or not batch_year:
-        add_toast(session, "Missing semester or batch year", "error")
-        return RedirectResponse("/admin/upload", status_code=303)
+        return Titled(
+            "Error",
+            P("Missing semester or batch year."),
+            A("Back", href="javascript:history.back()"),
+        )
 
     filename = f"{batch_year}.zip"  # Proper filename
 
@@ -762,13 +745,15 @@ async def admin_upload_resolve(req, session):
             upload_file_to_drive(file_bytes, filename, semester)
 
             temp_file.unlink()
-            add_toast(session, f"Replaced {filename} in Drive", "success")
-            return RedirectResponse("/admin")
+            return RedirectResponse("/admin", status_code=303)
         except Exception as e:
-            add_toast(session, f"Error during replacement: {str(e)}", "error")
             if temp_file.exists():
                 temp_file.unlink()
-            return RedirectResponse("/admin/upload", status_code=303)
+            return Titled(
+                "Error",
+                P(f"Error during replacement: {str(e)}"),
+                A("Back", href="javascript:history.back()"),
+            )
 
     elif action == "merge":
         try:
@@ -776,18 +761,23 @@ async def admin_upload_resolve(req, session):
                 new_file_bytes = f.read()
             merge_zip_files_in_drive(existing_file_id, new_file_bytes)
             temp_file.unlink()
-            add_toast(session, f"Merged new content into {filename}", "success")
-            return RedirectResponse("/admin")
+            return RedirectResponse("/admin", status_code=303)
         except Exception as e:
-            add_toast(session, f"Merge failed: {str(e)}", "error")
             if temp_file.exists():
                 temp_file.unlink()
-            return RedirectResponse("/admin/upload", status_code=303)
+            return Titled(
+                "Error",
+                P(f"Merge failed: {str(e)}"),
+                A("Back", href="javascript:history.back()"),
+            )
 
     if temp_file.exists():
         temp_file.unlink()
-    add_toast(session, "Resolution not confirmed or invalid action.", "error")
-    return RedirectResponse("/admin/upload", status_code=303)
+    return Titled(
+        "Error",
+        P("Resolution not confirmed or invalid action."),
+        A("Back", href="javascript:history.back()"),
+    )
 
 
 def conflict_resolution_page(temp_path, existing_file_id, batch_year, semester):
@@ -817,13 +807,15 @@ def conflict_resolution_page(temp_path, existing_file_id, batch_year, semester):
                 "Type REMOVE for confirmation 2",
                 Input(name="confirm2", type="text"),
             ),
+            Label("Admin Password:", Input(type="password", name="password")),
             Button("Resolve", type="submit"),
         ),
+        A("Back", href="javascript:history.back()"),
     )
 
 
 @rt("/admin/delete", methods=["GET", "POST"])
-async def admin_delete(req, session):
+async def admin_delete(req):
     file_id = req.query_params.get("file")
 
     if not file_id:
@@ -857,6 +849,7 @@ async def admin_delete(req, session):
                 Label("Admin Password:", Input(type="password", name="password")),
                 Button("Delete", type="submit"),
             ),
+            A("Back", href="javascript:history.back()"),
         )
 
     form = await req.form()
@@ -865,8 +858,8 @@ async def admin_delete(req, session):
 
     print(f"Confirmation input: {confirmation}")
     print(
-        f"Password input: {'*' * len(password) if password else None}"
-    )  # Mask password
+        f"Password input: {'*' * len(password) if password else None}"  # Mask password
+    )
 
     if confirmation == "DELETE" and password == ADMIN_PASSWD:
         try:
@@ -890,18 +883,35 @@ async def admin_delete(req, session):
             if (utc_now - mod_time).total_seconds() <= 86400:
                 print(f"Attempting to delete file with ID: {file_id}")
                 DRIVE_SERVICE.files().delete(fileId=file_id).execute()
-                add_toast(session, "File deleted", "success")
                 print(f"Successfully deleted file with ID: {file_id}")
             else:
-                add_toast(session, "Cannot delete file older than 24 hours", "error")
                 print("Error: Cannot delete file older than 24 hours")
+                return Titled(
+                    "Error",
+                    P("Cannot delete file older than 24 hours."),
+                    A("Back", href="javascript:history.back()"),
+                )
         except errors.HttpError as error:  # Catch the Google API errors specifically
             print(f"An Google API error occurred: {error}")
-            add_toast(session, f"Deletion failed: {str(error)}", "error")
+            return Titled(
+                "Error",
+                P(f"Deletion failed: {str(error)}"),
+                A("Back", href="javascript:history.back()"),
+            )
         except Exception as e:
             print(f"An unexpected error occurred during deletion: {e}")
-            add_toast(session, f"Deletion failed: {str(e)}", "error")
+            return Titled(
+                "Error",
+                P(f"Deletion failed: {str(e)}"),
+                A("Back", href="javascript:history.back()"),
+            )
         return RedirectResponse("/admin", status_code=303)
+    else:
+        return Titled(
+            "Error",
+            P("Invalid confirmation or password."),
+            A("Back", href="javascript:history.back()"),
+        )
 
 
 # === USER INTERFACE ===
@@ -912,7 +922,7 @@ def user_index(req):
     return Titled(
         "Data Science Resources",
         Ul(*[Li(A(f"Semester {i}", href=f"/semester/{i}")) for i in range(1, 9)]),
-        P(A("Admin Login", href="/admin/login")),
+        A("Admin", href="/admin"),
     )
 
 
@@ -987,7 +997,7 @@ async def semester_view(req: Request, num: int):
                 """
             ),
         ),
-        P(A("Back to Home", href="/")),
+        A("Back to Home", href="/"),
     ]
 
     return Titled(f"Semester {num}", Form(*form_content, method="post"))
@@ -1012,7 +1022,11 @@ async def semester_select(req):
         Select(*[Option(str(i), value=str(i)) for i in range(1, 9)], name="semester"),
         Button("View Semester Files", type="submit"),
     ]
-    return Titled("Select Semester", Form(form_content, method="post"))
+    return Titled(
+        "Select Semester",
+        Form(form_content, method="post"),
+        A("Back to Home", href="/"),
+    )
 
 
 @rt("/semester/{num}/download", methods=["POST"])
@@ -1057,7 +1071,9 @@ async def semester_download(req, num: int):
         )
 
     except Exception as e:
-        return Titled("Download Error", P(str(e)), A("Back", href=f"/semester/{num}"))
+        return Titled(
+            "Download Error", P(str(e)), A("Back", href="javascript:history.back()")
+        )
 
 
 @rt("/download")

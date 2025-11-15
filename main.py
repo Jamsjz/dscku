@@ -13,6 +13,7 @@ from fasthtml.common import *
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
+from fasthtml_hf import setup_hf_backup
 
 # === CONFIGURATION ===
 load_dotenv()
@@ -23,7 +24,7 @@ credentials = service_account.Credentials.from_service_account_info(
         "type": os.getenv("GOOGLE_TYPE"),
         "project_id": os.getenv("GOOGLE_PROJECT_ID"),
         "private_key_id": os.getenv("GOOGLE_PRIVATE_KEY_ID"),
-        "private_key": os.getenv("GOOGLE_PRIVATE_KEY").replace("\\n", "\n"),
+        "private_key": os.getenv("GOOGLE_PRIVATE_KEY"),
         "client_email": os.getenv("GOOGLE_CLIENT_EMAIL"),
         "client_id": os.getenv("GOOGLE_CLIENT_ID"),
         "auth_uri": os.getenv("GOOGLE_AUTH_URI"),
@@ -492,48 +493,53 @@ def admin_dashboard(req, session):
                 ),
                 style="margin-bottom: 20px;",
             ),
-            Table(
-                Thead(
-                    Tr(
-                        Th("Semester"),
-                        Th("Filename"),
-                        Th("Modified"),
-                        Th("Size"),
-                        Th("Type"),
-                        Th("Actions"),
-                    )
-                ),
-                Tbody(
-                    *[
+            (
+                Table(
+                    Thead(
                         Tr(
-                            Td(file["semester"]),
-                            Td(file["filename"]),
-                            Td(file["modified"]),
-                            Td(file["size"]),
-                            Td(
-                                "ZIP Archive" if "zip" in file["type"] else file["type"]
-                            ),
-                            Td(
-                                A(
-                                    "Delete",
-                                    href=f"/admin/delete?file={file['file_id']}",
-                                    style="color: #d9534f;",
-                                )
-                            ),
+                            Th("Semester"),
+                            Th("Filename"),
+                            Th("Modified"),
+                            Th("Size"),
+                            Th("Type"),
+                            Th("Actions"),
                         )
-                        for file in sorted(
-                            all_files, key=lambda x: x["modified"], reverse=True
-                        )
-                    ]
-                ),
-            )
-            if all_files
-            else P("No recent uploads found in the last 24 hours"),
+                    ),
+                    Tbody(
+                        *[
+                            Tr(
+                                Td(file["semester"]),
+                                Td(file["filename"]),
+                                Td(file["modified"]),
+                                Td(file["size"]),
+                                Td(
+                                    "ZIP Archive"
+                                    if "zip" in file["type"]
+                                    else file["type"]
+                                ),
+                                Td(
+                                    A(
+                                        "Delete",
+                                        href=f"/admin/delete?file={file['file_id']}",
+                                        style="color: #d9534f;",
+                                    )
+                                ),
+                            )
+                            for file in sorted(
+                                all_files, key=lambda x: x["modified"], reverse=True
+                            )
+                        ]
+                    ),
+                )
+                if all_files
+                else P("No recent uploads found in the last 24 hours")
+            ),
             Div(
                 A("Upload New File", href="/admin/upload", class_="btn btn-primary"),
                 style="margin-top: 30px;",
             ),
-            Script("""
+            Script(
+                """
                 // Try to detect user's timezone
                 try {
                     const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -541,7 +547,8 @@ def admin_dashboard(req, session):
                 } catch (e) {
                     console.log("Could not detect timezone", e);
                 }
-            """),
+            """
+            ),
         )
     except Exception as e:
         print(f"Error loading admin dashboard: {str(e)}")
@@ -692,7 +699,8 @@ async def admin_upload_form(req, session):
             Div(id="errorMsg", style="color: red; margin: 10px 0;"),
             Button("Upload", type="submit"),
         ),
-        Script("""
+        Script(
+            """
             function validateFile() {
                 const fileInput = document.getElementById('fileInput');
                 const errorDiv = document.getElementById('errorMsg');
@@ -720,7 +728,8 @@ async def admin_upload_form(req, session):
                 
                 return true;
             }
-        """),
+        """
+        ),
     )
 
 
@@ -1078,4 +1087,5 @@ except Exception as e:
 TEMP_UPLOADS = Path("/tmp/temp_uploads")
 TEMP_UPLOADS.mkdir(parents=True, exist_ok=True)
 # === RUN THE APP ===
+setup_hf_backup(app)
 serve()

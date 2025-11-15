@@ -6,3 +6,4 @@ temp_uploads/
 __pycache__/
 .env
 .sesskey
+.venv

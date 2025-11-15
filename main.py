@@ -1088,4 +1088,4 @@ TEMP_UPLOADS = Path("/tmp/temp_uploads")
 TEMP_UPLOADS.mkdir(parents=True, exist_ok=True)
 # === RUN THE APP ===
 setup_hf_backup(app)
-serve()
+serve(port=7860)
